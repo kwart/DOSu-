@@ -23,7 +23,8 @@ Two build paths:
 
 - **Inside a DOS/DOSBox Turbo C IDE**: open `src/Dosu.c` and press **F9** (Make). Graphics library must be linked.
 - **From Linux via DOSBox automation**: `scripts/build.sh` mounts a local Turbo C install and invokes `TCC`/`BCC` non-interactively. Requires `dosbox` on PATH and `TC_DIR` pointing at a Turbo C install (default `./tools/TC`, containing `BIN/`, `INCLUDE/`, `LIB/`). Output lands in `build/` and is copied to `bin/DOSU.EXE`.
-- `scripts/run.sh` stages a disposable `run/` directory (with EXE, `map.osu`, `audio.wav`, and a `TC/BGI` subdir matching the hard-coded `initgraph()` path) and launches it in DOSBox. Pass the map and audio with `MAP=... AUDIO=... scripts/run.sh`.
+- `scripts/run.sh` stages a disposable `run/` directory (with EXE, `map.osu`, `audio.wav`, and a `TC/BGI` subdir matching the hard-coded `initgraph()` path) and launches it in DOSBox. Pass the map and audio with `MAP=... AUDIO=... scripts/run.sh`. It also writes a `dosbox.conf` that caps emulated CPU speed — DOSBox's `cycles=auto` default overclocks the game on modern notebooks. Speed is auto-configured from `/proc/cpuinfo` on first run and cached at `~/.cache/dosu/cycles`; override with `SPEED=slow|normal|fast|max`, `CYCLES=<int>`, or `RECALIBRATE=1`. At runtime in DOSBox, Ctrl+F11/Ctrl+F12 nudge cycles down/up live.
+- `scripts/gen_sample.py` writes a demo `run/map.osu` + `run/audio.wav` (120 BPM, 34 circles, 8 kHz 8-bit mono PCM) for quick testing.
 
 ## Running
 
