@@ -86,10 +86,13 @@ echo "Build dir   = $BUILD_DIR"
 echo "Compile cmd = $COMPILE_CMD"
 echo
 
+# TCC compiles in-process but spawns TLINK as a child; if PATH doesn't
+# include C:\BIN, the link step silently fails and leaves only a .OBJ.
 # -exit quits DOSBox after the -c queue drains.
 "$DOSBOX" -exit \
     -c "mount c \"$TC_DIR\"" \
     -c "mount d \"$BUILD_DIR\"" \
+    -c "path=c:\\bin" \
     -c "d:" \
     -c "$COMPILE_CMD" \
     -c "exit"
