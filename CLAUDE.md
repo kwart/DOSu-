@@ -17,9 +17,13 @@ Note: `src/Dosu!.c` shows as deleted and `src/Dosu.c` as untracked in git — th
 
 ## Build
 
-There is no Makefile. The project is built inside Turbo C++ 3.0 on DOS (or DOSBox) by opening `src/Dosu.c` and pressing **F9** (Make). The compiler must be configured to link the Graphics library (BGI). There is no Linux/gcc build path — `#include <dos.h>`, `#include <graphics.h>`, `#include <bios.h>`, `interrupt` keyword, `inportb`/`outportb`, and far pointers are all Turbo C specific.
+There is no Makefile. The project must be built with Turbo C 2.01 / Turbo C++ 3.0 — `#include <dos.h>`, `<graphics.h>`, `<bios.h>`, the `interrupt` keyword, `inportb`/`outportb`, far pointers and 16-bit `int` are all Turbo C specific. Do not attempt `gcc`/`cc` from Linux.
 
-If asked to "build" from this Linux working copy, explain that it requires Turbo C 3.0 in DOSBox — don't attempt `gcc`/`cc`.
+Two build paths:
+
+- **Inside a DOS/DOSBox Turbo C IDE**: open `src/Dosu.c` and press **F9** (Make). Graphics library must be linked.
+- **From Linux via DOSBox automation**: `scripts/build.sh` mounts a local Turbo C install and invokes `TCC`/`BCC` non-interactively. Requires `dosbox` on PATH and `TC_DIR` pointing at a Turbo C install (default `./tools/TC`, containing `BIN/`, `INCLUDE/`, `LIB/`). Output lands in `build/` and is copied to `bin/DOSU.EXE`.
+- `scripts/run.sh` stages a disposable `run/` directory (with EXE, `map.osu`, `audio.wav`, and a `TC/BGI` subdir matching the hard-coded `initgraph()` path) and launches it in DOSBox. Pass the map and audio with `MAP=... AUDIO=... scripts/run.sh`.
 
 ## Running
 

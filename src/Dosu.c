@@ -270,20 +270,28 @@ if (timingPoints[i].time <= sliderTime && !timingPoints[i].inherited) {
     break;
 }
     }
-    // Najit posledni TP <= sliderTime pro SV
+    /* Najit posledni TP <= sliderTime pro SV */
     for (i = timingCount - 1; i >= 0; i--) {
 if (timingPoints[i].time <= sliderTime) {
     if (timingPoints[i].inherited) {
-sv = -100.0 / timingPoints[i].beatLength;
+if (timingPoints[i].beatLength != 0.0) {
+    sv = -100.0 / timingPoints[i].beatLength;
+} else {
+    sv = 1.0;
+}
     } else {
 sv = 1.0;
     }
     break;
 }
     }
+    /* Zabrana deleni nulou - zachovej rozumny default pri degenerovanych mapach */
+    if (baseBeatLength <= 0.0) baseBeatLength = 500.0;
     effectiveSV = sliderMultiplier * sv;
+    if (effectiveSV <= 0.0) effectiveSV = 1.0;
     beats = sliderLength / (100.0 * effectiveSV);
     durationOne = beats * baseBeatLength;
+    if (repeats < 1) repeats = 1;
     return durationOne * repeats;
 }
 // ----------------------------------------
@@ -300,42 +308,52 @@ line(points[i][0], points[i][1], points[i+1][0], points[i+1][1]);
 // ----------------------------------------
 // Vypocet pozice follow circle podle progress (0-1 pro jeden pass)
 void getFollowPosition(long x, long y, long curvePoints[][2], long curveCount, double progress, long *targetX, long *targetY) {
-    int pathPoints[MAX_CURVE_POINTS + 1][2];
+    long pathPoints[MAX_CURVE_POINTS + 1][2];
     double segLengths[MAX_CURVE_POINTS];
     double totalLength = 0.0;
     int i;
     double cum = 0.0;
     int pathCount;
-    int dx, dy;
+    long dx, dy;
     double targetDist;
-    float frac;
-    // Vytvorit path: start + curve points
+    double frac;
+    /* Vytvorit path: start + curve points */
     pathPoints[0][0] = x;
     pathPoints[0][1] = y;
     for (i = 0; i < curveCount; i++) {
 pathPoints[i + 1][0] = curvePoints[i][0];
 pathPoints[i + 1][1] = curvePoints[i][1];
     }
-    pathCount = curveCount + 1;
-    // Vypocitat delky segmentu
+    pathCount = (int)curveCount + 1;
+    /* Vypocitat delky segmentu - pouzit long kvuli 16b int overflow pri dx*dx */
     for (i = 0; i < pathCount - 1; i++) {
 dx = pathPoints[i + 1][0] - pathPoints[i][0];
 dy = pathPoints[i + 1][1] - pathPoints[i][1];
 segLengths[i] = sqrt((double)(dx * dx + dy * dy));
 totalLength += segLengths[i];
     }
-    // Target distance podle progress
+    if (totalLength <= 0.0) {
+*targetX = x;
+*targetY = y;
+return;
+    }
+    /* Target distance podle progress */
     targetDist = progress * totalLength;
     for (i = 0; i < pathCount - 1; i++) {
 if (cum + segLengths[i] >= targetDist) {
-    frac = (targetDist - cum) / segLengths[i];
-    *targetX = pathPoints[i][0] + (long)(frac * (pathPoints[i + 1][0] - pathPoints[i][0]));
-    *targetY = pathPoints[i][1] + (long)(frac * (pathPoints[i + 1][1] - pathPoints[i][1]));
+    if (segLengths[i] <= 0.0) {
+*targetX = pathPoints[i][0];
+*targetY = pathPoints[i][1];
+    } else {
+frac = (targetDist - cum) / segLengths[i];
+*targetX = pathPoints[i][0] + (long)(frac * (pathPoints[i + 1][0] - pathPoints[i][0]));
+*targetY = pathPoints[i][1] + (long)(frac * (pathPoints[i + 1][1] - pathPoints[i][1]));
+    }
     return;
 }
 cum += segLengths[i];
     }
-    // Pokud progress=1, posledni bod
+    /* Pokud progress=1, posledni bod */
     *targetX = pathPoints[pathCount - 1][0];
     *targetY = pathPoints[pathCount - 1][1];
 }
@@ -387,9 +405,12 @@ void setup_dma(unsigned char *buffer, unsigned int length) {
     outportb(DMA_PAGE, page);
     outportb(DMA_MASK, DMA_CHANNEL); // Unmask
 }
-void sb_set_rate(unsigned int rate) {
-    unsigned char tc = 256 - (1000000 / rate);
-    sb_write_dsp(0x40); // Set time constant
+void sb_set_rate(unsigned int sampleRate) {
+    unsigned char tc;
+    if (sampleRate == 0) sampleRate = 8000;
+    /* 1000000L zajisti long aritmetiku pod Turbo C (int=16b) */
+    tc = (unsigned char)(256L - (1000000L / (long)sampleRate));
+    sb_write_dsp(0x40); /* Set time constant */
     sb_write_dsp(tc);
 }
 void sb_play(unsigned int length) {
@@ -407,9 +428,11 @@ end_of_file = 1;
 // ----------------------------------------
 // Check if point is inside circle
 int isInsideCircle(int cx, int cy, int r, int px, int py) {
-    int dx = px - cx;
-    int dy = py - cy;
-    return (dx * dx + dy * dy) <= (r * r);
+    /* long aritmetika - pod Turbo C je int 16b a dx*dx snadno pretece */
+    long dx = (long)px - (long)cx;
+    long dy = (long)py - (long)cy;
+    long lr = (long)r;
+    return (dx * dx + dy * dy) <= (lr * lr);
 }
 // ----------------------------------------
 // Check naznaceni smeru pro slider
@@ -421,10 +444,10 @@ int checkDirection(long sliderX, long sliderY, long nextX, long nextY, long mous
     double dot;
     sliderDX = nextX - sliderX;
     sliderDY = nextY - sliderY;
-    sliderMag = sqrt(sliderDX * sliderDX + sliderDY * sliderDY);
-    mouseMag = sqrt(mouseDX * mouseDX + mouseDY * mouseDY);
-    if (mouseMag == 0) return 0;
-    dot = (sliderDX * mouseDX + sliderDY * mouseDY) / (sliderMag * mouseMag);
+    sliderMag = sqrt((double)(sliderDX * sliderDX + sliderDY * sliderDY));
+    mouseMag = sqrt((double)(mouseDX * mouseDX + mouseDY * mouseDY));
+    if (sliderMag == 0.0 || mouseMag == 0.0) return 0;
+    dot = ((double)sliderDX * mouseDX + (double)sliderDY * mouseDY) / (sliderMag * mouseMag);
     return dot > DIRECTION_TOLERANCE;
 }
 // ----------------------------------------
@@ -444,20 +467,21 @@ void showEndScreen() {
     totalHits = count300 + count100 + count50 + countMiss;
     accuracy = 0.0;
     if (totalHits > 0) {
-accuracy = 100.0 * (count300 * 300 + count100 * 100 + count50 * 50) / (totalHits * 300);
+/* Pozn.: 100L kvuli long aritmetice; 300.0 vynuti double deleni */
+accuracy = 100.0 * (count300 * 300L + count100 * 100L + count50 * 50L) / (totalHits * 300.0);
     }
     cleardevice();
     setcolor(WHITE);
     outtextxy(10, 10, "Finish - statistics:");
-    sprintf(buf, "30: %d", count300);
+    sprintf(buf, "30: %ld", count300);
     outtextxy(10, 50, buf);
-    sprintf(buf, "10: %d", count100);
+    sprintf(buf, "10: %ld", count100);
     outtextxy(10, 70, buf);
-    sprintf(buf, "5: %d", count50);
+    sprintf(buf, "5: %ld", count50);
     outtextxy(10, 90, buf);
-    sprintf(buf, "misses: %d", countMiss);
+    sprintf(buf, "misses: %ld", countMiss);
     outtextxy(10, 110, buf);
-    sprintf(buf, "total score: %d", score);
+    sprintf(buf, "total score: %ld", score);
     outtextxy(10, 130, buf);
     sprintf(buf, "accuracy: %.2f%%", accuracy);
     outtextxy(10, 150, buf);
@@ -468,7 +492,7 @@ accuracy = 100.0 * (count300 * 300 + count100 * 100 + count50 * 50) / (totalHits
 // main
 int main() {
     int gd = DETECT, gm;
-    long startTime, now, time_since_irq, additional_bytes, total_bytes;
+    long now, time_since_irq, additional_bytes, total_bytes;
     int i, active, j, inBreak;
     char buf[64], numBuf[3];
     unsigned char *alloc_buf1, *alloc_buf2;
@@ -526,7 +550,11 @@ exit(1);
     // Cteni sample rate z WAV headeru (bytes 24-27, little endian)
     fseek(wavFile, 24, SEEK_SET);
     fread(rate_bytes, 1, 4, wavFile);
-    sample_rate = rate_bytes[0] | (rate_bytes[1] << 8) | (rate_bytes[2] << 16) | (rate_bytes[3] << 24);
+    /* Cast na unsigned long pred shiftem - pod Turbo C je int 16b a shift 16/24 by prisel o vyssi byty */
+    sample_rate = (unsigned long)rate_bytes[0]
+                | ((unsigned long)rate_bytes[1] << 8)
+                | ((unsigned long)rate_bytes[2] << 16)
+                | ((unsigned long)rate_bytes[3] << 24);
     if (sample_rate > 0 && sample_rate <= 44100) {
 rate = (unsigned int)sample_rate;
     } else {
@@ -542,18 +570,21 @@ fclose(wavFile);
 closegraph();
 return 1;
     }
-    // Align buffers
-    buffers[0] = alloc_buf1;
-    seg = _DS;
-    off = (unsigned)buffers[0];
-    phys = ((unsigned long)seg << 4) + off;
-    off = phys & 0xFFFF;
-    if (off + BUFFER_SIZE > 65536) buffers[0] += (65536 - off);
-    buffers[1] = alloc_buf2;
-    off = (unsigned)buffers[1];
-    phys = ((unsigned long)seg << 4) + off;
-    off = phys & 0xFFFF;
-    if (off + BUFFER_SIZE > 65536) buffers[1] += (65536 - off);
+    /* Align buffers - pouzit unsigned long pro kontrolu, jinak (off+BUFFER_SIZE) pretece 16b unsigned */
+    {
+unsigned long loff;
+buffers[0] = alloc_buf1;
+seg = _DS;
+off = (unsigned)buffers[0];
+phys = ((unsigned long)seg << 4) + off;
+loff = phys & 0xFFFFUL;
+if (loff + BUFFER_SIZE > 65536UL) buffers[0] += (unsigned)(65536UL - loff);
+buffers[1] = alloc_buf2;
+off = (unsigned)buffers[1];
+phys = ((unsigned long)seg << 4) + off;
+loff = phys & 0xFFFFUL;
+if (loff + BUFFER_SIZE > 65536UL) buffers[1] += (unsigned)(65536UL - loff);
+    }
     // Fill initial buffers
     buf_lengths[0] = fill_buffer(buffers[0]);
     buf_lengths[1] = fill_buffer(buffers[1]);
@@ -574,10 +605,9 @@ return 1;
     outportb(PIC_MASK, inportb(PIC_MASK) & ~(1 << IRQ));
     // Set rate
     sb_set_rate(rate);
-    // Start timer for graphics
-    startTime = getTimeMS();
-    lastLifeDrainTime = startTime;
-    lastKeyPressTime = startTime;
+    /* Start timer for graphics */
+    lastLifeDrainTime = getTimeMS();
+    lastKeyPressTime = lastLifeDrainTime;
     prevMouseButton = 0;
     // Delay pro AudioLeadIn
     delay(audioLeadIn);
@@ -643,7 +673,11 @@ if (inBreak) {
 appearTime = objects[i].time - PRE_SHOW;
 disappearTime = objects[i].time + MISS_WINDOW + FADE_OUT_MS; // Prodlozit pro miss check
 if (objects[i].type == 2) {
-    totalDuration = calculateSliderDuration(objects[i].time, objects[i].sliderLength, objects[i].repeats);
+    int rep = objects[i].repeats > 0 ? objects[i].repeats : 1;
+    totalDuration = calculateSliderDuration(objects[i].time, objects[i].sliderLength, rep);
+    /* durationOne = delka jednoho pruchodu slideru; drive bylo neinicializovane a pouzivane pro deleni */
+    durationOne = totalDuration / (double)rep;
+    if (durationOne <= 0.0) durationOne = 1.0;
     disappearTime = objects[i].time + (long)totalDuration + FADE_OUT_MS;
 }
 if (now < appearTime || now > disappearTime) continue;
