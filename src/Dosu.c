@@ -6,6 +6,7 @@
 #include <string.h>
 #include <math.h>
 #include <bios.h>
+#include <alloc.h>
 #define MAX_OBJECTS 250
 #define MAX_BREAKS 5
 #define MAX_TIMING_POINTS 50
@@ -14,7 +15,7 @@
 #define loopDelay 80
 #define PRE_SHOW 1000 // ms the objects show up before the hit
 #define AUDIO_DELAY_MS 0 // pretty self explaining
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 8192
 #define CIRCLE_RADIUS 20
 #define APPROACH_SCALE 3.0 // starting approach circle size (defeault is 3x of the circle radius)
 #define FOLLOW_RADIUS 10 // nothing i guess i had to remove slider follow circles since they were broken and caused sqrt issues
@@ -78,13 +79,14 @@ int timingCount = 0;
 long audioLeadIn = 0;
 int epilepsyWarning = 0;
 double sliderMultiplier = 1.4; // Default, bude prepsano
-// Audio DMA + IRQ
+// Audio DMA + IRQ (ISR-based single-cycle double-buffer)
 void interrupt (*old_irq)(void);
-volatile int irq_fired = 0;
-volatile int current_buffer = 0;
-volatile int end_of_file = 0;
-unsigned char *buffers[2];
-unsigned int buf_lengths[2];
+volatile int irq_done = 0;
+volatile int needs_fill[2];
+volatile int playing_half = 0;
+int end_of_file = 0;
+unsigned char far *alloc_dma;       /* raw farmalloc ptr for farfree() */
+unsigned char far *half_buf[2];     /* pointers to each half */
 FILE *wavFile;
 long played_bytes = 0;
 long last_irq_time = 0;
@@ -358,9 +360,12 @@ cum += segLengths[i];
     *targetY = pathPoints[pathCount - 1][1];
 }
 void interrupt irq_handler(void) {
-    inportb(SB_STATUS); // Ack DSP interrupt
-    outportb(0x20, 0x20); // EOI to PIC
-    irq_fired = 1;
+    inportb(SB_STATUS);
+    outportb(0x20, 0x20);
+    /* Auto-init DMA keeps playing — just flag which half finished */
+    needs_fill[playing_half] = 1;
+    playing_half = 1 - playing_half;
+    irq_done = 1;
 }
 int sb_reset(void) {
     int i;
@@ -385,25 +390,21 @@ unsigned char sb_read_dsp(void) {
     while (!(inportb(SB_STATUS) & 0x80));
     return inportb(SB_READ);
 }
-void setup_dma(unsigned char *buffer, unsigned int length) {
-    unsigned seg;
-    unsigned off;
+void setup_dma_for(unsigned char far *buffer, unsigned int length) {
     unsigned long phys;
     unsigned int page, addr;
-    seg = _DS;
-    off = (unsigned)buffer;
-    phys = ((unsigned long)seg << 4) + off;
-    page = phys >> 16;
-    addr = phys & 0xFFFF;
-    outportb(DMA_MASK, DMA_CHANNEL | 4); // Mask channel
-    outportb(DMA_FF, 0); // Clear flip-flop
-    outportb(DMA_MODE, 0x48 + DMA_CHANNEL); // Single mode, playback
+    phys = ((unsigned long)FP_SEG(buffer) << 4) + FP_OFF(buffer);
+    page = (unsigned int)(phys >> 16);
+    addr = (unsigned int)(phys & 0xFFFF);
+    outportb(DMA_MASK, DMA_CHANNEL | 4);
+    outportb(DMA_FF, 0);
+    outportb(DMA_MODE, 0x58 + DMA_CHANNEL); /* auto-init, mem->IO */
     outportb(DMA_ADDR, addr & 0xFF);
     outportb(DMA_ADDR, addr >> 8);
     outportb(DMA_COUNT, (length-1) & 0xFF);
     outportb(DMA_COUNT, (length-1) >> 8);
     outportb(DMA_PAGE, page);
-    outportb(DMA_MASK, DMA_CHANNEL); // Unmask
+    outportb(DMA_MASK, DMA_CHANNEL);
 }
 void sb_set_rate(unsigned int sampleRate) {
     unsigned char tc;
@@ -414,14 +415,16 @@ void sb_set_rate(unsigned int sampleRate) {
     sb_write_dsp(tc);
 }
 void sb_play(unsigned int length) {
-    sb_write_dsp(0x14); // 8-bit single cycle DMA
+    sb_write_dsp(0x48); /* set block transfer size */
     sb_write_dsp((length-1) & 0xFF);
     sb_write_dsp((length-1) >> 8);
+    sb_write_dsp(0x1C); /* 8-bit auto-init DMA */
 }
-unsigned int fill_buffer(unsigned char *buffer) {
+unsigned int fill_buffer(unsigned char far *buffer) {
     unsigned int bytes_read = fread(buffer, 1, BUFFER_SIZE, wavFile);
     if (bytes_read < BUFFER_SIZE) {
-end_of_file = 1;
+	memset(buffer + bytes_read, 128, BUFFER_SIZE - bytes_read);
+	end_of_file = 1;
     }
     return bytes_read;
 }
@@ -495,9 +498,6 @@ int main() {
     long now, time_since_irq, additional_bytes, total_bytes;
     int i, active, j, inBreak;
     char buf[64], numBuf[3];
-    unsigned char *alloc_buf1, *alloc_buf2;
-    unsigned seg, off;
-    unsigned long phys;
     int done = 0;
     unsigned long sample_rate;
     unsigned char rate_bytes[4];
@@ -561,41 +561,35 @@ rate = (unsigned int)sample_rate;
 printf("Nepodporovana sample rate %lu, pouzivam default 8000\n", sample_rate);
     }
     fseek(wavFile, 44, SEEK_SET); // preskocit header 44B
-    // Allocate buffers
-    alloc_buf1 = (unsigned char *)malloc(BUFFER_SIZE + 65536);
-    alloc_buf2 = (unsigned char *)malloc(BUFFER_SIZE + 65536);
-    if (!alloc_buf1 || !alloc_buf2) {
-printf("No memory\n");
-fclose(wavFile);
-closegraph();
-return 1;
+    /* Allocate DMA buffers via farmalloc (malloc truncates to 16-bit size) */
+    alloc_dma = (unsigned char far *)farmalloc(BUFFER_SIZE * 3UL);
+    if (!alloc_dma) {
+	printf("No memory\n");
+	fclose(wavFile);
+	closegraph();
+	return 1;
     }
-    /* Align buffers - pouzit unsigned long pro kontrolu, jinak (off+BUFFER_SIZE) pretece 16b unsigned */
+    /* Align so each BUFFER_SIZE half stays within one 64K DMA page */
     {
-unsigned long loff;
-buffers[0] = alloc_buf1;
-seg = _DS;
-off = (unsigned)buffers[0];
-phys = ((unsigned long)seg << 4) + off;
-loff = phys & 0xFFFFUL;
-if (loff + BUFFER_SIZE > 65536UL) buffers[0] += (unsigned)(65536UL - loff);
-buffers[1] = alloc_buf2;
-off = (unsigned)buffers[1];
-phys = ((unsigned long)seg << 4) + off;
-loff = phys & 0xFFFFUL;
-if (loff + BUFFER_SIZE > 65536UL) buffers[1] += (unsigned)(65536UL - loff);
+	unsigned long phys, loff;
+	unsigned char far *p = alloc_dma;
+	phys = ((unsigned long)FP_SEG(p) << 4) + FP_OFF(p);
+	loff = phys & 0xFFFFUL;
+	if (loff + BUFFER_SIZE * 2UL > 65536UL)
+	    p = p + (65536UL - loff);
+	half_buf[0] = p;
+	half_buf[1] = p + BUFFER_SIZE;
     }
-    // Fill initial buffers
-    buf_lengths[0] = fill_buffer(buffers[0]);
-    buf_lengths[1] = fill_buffer(buffers[1]);
+    /* Fill both halves */
+    fill_buffer(half_buf[0]);
+    fill_buffer(half_buf[1]);
     // Reset SB
     if (!sb_reset()) {
-printf("SB reset failed\n");
-free(alloc_buf1);
-free(alloc_buf2);
-fclose(wavFile);
-closegraph();
-return 1;
+	printf("SB reset failed\n");
+	farfree(alloc_dma);
+	fclose(wavFile);
+	closegraph();
+	return 1;
     }
     // Turn on speaker
     sb_write_dsp(0xD1);
@@ -611,16 +605,33 @@ return 1;
     prevMouseButton = 0;
     // Delay pro AudioLeadIn
     delay(audioLeadIn);
-    // Nyni start audia
+    /* Start auto-init DMA over the full double buffer.
+       DMA hardware loops continuously; DSP fires IRQ every BUFFER_SIZE
+       bytes so we can refill each half. No CPU needed to keep playing. */
     last_irq_time = getTimeMS();
     played_bytes = 0;
-    current_buffer = 0;
+    playing_half = 0;
+    needs_fill[0] = 0;
+    needs_fill[1] = 0;
     end_of_file = 0;
-    irq_fired = 0;
-    setup_dma(buffers[current_buffer], buf_lengths[current_buffer]);
-    sb_play(buf_lengths[current_buffer]);
+    irq_done = 0;
+    setup_dma_for(half_buf[0], BUFFER_SIZE * 2U);
+    sb_play(BUFFER_SIZE);
     // hlavni smycka
     while (!done && playerLife > 0) {
+        /* ISR already chained DMA to the next buffer; just refill any
+           half that finished and update the audio clock */
+        if (irq_done) {
+            irq_done = 0;
+            played_bytes += BUFFER_SIZE;
+            last_irq_time = getTimeMS();
+        }
+        for (i = 0; i < 2; i++) {
+            if (needs_fill[i] && !end_of_file) {
+                fill_buffer(half_buf[i]);
+                needs_fill[i] = 0;
+            }
+        }
 // Vypocet casu
 time_since_irq = getTimeMS() - last_irq_time;
 additional_bytes = (time_since_irq * (long)rate) / 1000;
@@ -654,7 +665,9 @@ prevMouseButton = currentMouseButton;
 keyPress = 0;
 if (kbhit()) {
     char c = getch();
-    if (c == 'x' || c == 'X') {
+    if (c == 27) { /* ESC */
+        done = 1;
+    } else if (c == 'x' || c == 'X') {
         if (getTimeMS() - lastKeyPressTime > DEBOUNCE_MS) {
             keyPress = 1;
             lastKeyPressTime = getTimeMS();
@@ -801,24 +814,6 @@ active++;
         circle(mouseX, mouseY, 5);
         sprintf(buf, "t=%ld ms, active=%d", now, active);
         outtextxy(10, 10, buf);
-        // Handle audio IRQ
-        if (irq_fired) {
-            irq_fired = 0;
-            played_bytes += buf_lengths[current_buffer];
-            last_irq_time = getTimeMS();
-            current_buffer = 1 - current_buffer;
-            if (!end_of_file) {
-                buf_lengths[1 - current_buffer] = fill_buffer(buffers[1 - current_buffer]);
-            } else {
-                buf_lengths[1 - current_buffer] = 0;
-            }
-            if (buf_lengths[current_buffer] > 0) {
-                setup_dma(buffers[current_buffer], buf_lengths[current_buffer]);
-                sb_play(buf_lengths[current_buffer]);
-            } else {
-                end_of_file = 1;
-            }
-        }
         // Check if all objects done or audio ended
         if ((objectCount > 0 && now > objects[objectCount-1].time + 1000) || end_of_file) {
             done = 1;
@@ -831,9 +826,9 @@ delay(loopDelay / FPS);
     // Cleanup
     outportb(PIC_MASK, inportb(PIC_MASK) | (1 << IRQ));
     setvect(IRQ_VEC, old_irq);
-    sb_write_dsp(0xD3); // turn off speaker
-    free(alloc_buf1);
-    free(alloc_buf2);
+    sb_write_dsp(0xDA); /* exit auto-init DMA */
+    sb_write_dsp(0xD3); /* turn off speaker */
+    farfree(alloc_dma);
     fclose(wavFile);
     closegraph();
     return 0;
