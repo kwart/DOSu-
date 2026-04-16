@@ -1,5 +1,4 @@
 # DOSu-
---MAKE SURE TO GET THE LATEST VERSION 1.2 FOR BETTER GAMEPLAY WITH LESS BUGS--
 DOSu! is an open source rhytm-based game engine heavily inspired by the game "osu!" made entirely in C89 and running natively under MS-DOS operating systems.
 
 --HOW TO GET STARTED--
