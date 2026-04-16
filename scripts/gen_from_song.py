@@ -140,12 +140,12 @@ def beats_from(total_ms, bpm, first_beat_ms):
 
 
 def zigzag_positions():
-    # Safe rectangle inside 640x480 VGA.
+    # Safe rectangle inside 640x350 VGA (VGAMED for page-flip support).
     return [
-        (160, 140), (320, 140), (480, 140),
-        (480, 260), (320, 260), (160, 260),
-        (160, 380), (320, 380), (480, 380),
-        (320, 260),
+        (160, 80), (320, 80), (480, 80),
+        (480, 175), (320, 175), (160, 175),
+        (160, 270), (320, 270), (480, 270),
+        (320, 175),
     ]
 
 

@@ -494,7 +494,8 @@ accuracy = 100.0 * (count300 * 300L + count100 * 100L + count50 * 50L) / (totalH
 // ----------------------------------------
 // main
 int main() {
-    int gd = DETECT, gm;
+    int gd = VGA, gm = VGAMED; /* 640x350x16, 2 pages for flicker-free drawing */
+    int drawPage = 0;
     long now, time_since_irq, additional_bytes, total_bytes;
     int i, active, j, inBreak;
     char buf[64], numBuf[3];
@@ -637,6 +638,8 @@ time_since_irq = getTimeMS() - last_irq_time;
 additional_bytes = (time_since_irq * (long)rate) / 1000;
 total_bytes = played_bytes + additional_bytes;
 now = (total_bytes * 1000L) / rate - AUDIO_DELAY_MS;
+/* Draw on hidden page, then flip */
+setactivepage(drawPage);
 cleardevice();
 // Check if in break
 inBreak = 0;
@@ -818,6 +821,9 @@ active++;
         if ((objectCount > 0 && now > objects[objectCount-1].time + 1000) || end_of_file) {
             done = 1;
         }
+        /* Flip: show the page we just drew, next frame draws on the other */
+        setvisualpage(drawPage);
+        drawPage = 1 - drawPage;
         // FPS limit
 delay(loopDelay / FPS);
     }
