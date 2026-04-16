@@ -6,7 +6,7 @@ Its simple.. just get the DOSU exe file or compile the C89 code and place it in 
 
 --DEMO/AUTOPLAY--
 The Dosu!_demo allows you to run the beatmap and the audio without playing the game by yourself, ideal for demonstrations and
-lower end hardware testing, to run the program the same files are required as for the normal EXE file. Note that the DEMO is still very buggy and might have sqrt issues on linger slider segments etc...
+lower end hardware testing, to run the program the same files are required as for the normal EXE file. Note that the DEMO is still very buggy and might have sqrt issues on longer slider segments etc...
 
 --AUDIO SETUP--
 DOSu! is acessing audio through sound blaster or compatible card on address 0x220 IRQ 5 and DMA 1
