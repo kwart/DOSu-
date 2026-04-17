@@ -169,6 +169,12 @@ cputype=auto
 $CYCLES_LINE
 cycleup=500
 cycledown=500
+
+[sblaster]
+sbtype=sb16
+sbbase=220
+irq=5
+dma=1
 EOF
 
 echo "Run dir = $RUN_DIR"
