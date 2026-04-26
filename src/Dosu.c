@@ -827,13 +827,14 @@ active++;
         // FPS limit
 delay(loopDelay / FPS);
     }
+    // Zastavit zvuk pred koncovym screenem
+    outportb(PIC_MASK, inportb(PIC_MASK) | (1 << IRQ));
+    sb_write_dsp(0xDA); /* exit auto-init DMA */
+    sb_write_dsp(0xD3); /* turn off speaker */
+    setvect(IRQ_VEC, old_irq);
     // Koncovy screen
     showEndScreen();
     // Cleanup
-    outportb(PIC_MASK, inportb(PIC_MASK) | (1 << IRQ));
-    setvect(IRQ_VEC, old_irq);
-    sb_write_dsp(0xDA); /* exit auto-init DMA */
-    sb_write_dsp(0xD3); /* turn off speaker */
     farfree(alloc_dma);
     fclose(wavFile);
     closegraph();
