@@ -523,15 +523,23 @@ int main() {
     int directionOK;
     int isHit;
     int baseScore;
+    int grErr;
+    int regErr;
     loadBeatmap("map.osu");
     printf("Map loaded: %d objects, %d breaks, %d timings, AudioLeadIn: %ld ms, SliderMultiplier: %.2f\n", objectCount, breakCount, timingCount, audioLeadIn, sliderMultiplier);
     if (!initMouse()) {
 printf("Myš nenalezena\n");
 return 1;
     }
-    initgraph(&gd, &gm, "C:\\TC\\BGI");
-    if (graphresult() != grOk) {
-printf("Graphics error\n");
+    regErr = registerbgidriver(EGAVGA_driver);
+    if (regErr < 0) {
+printf("BGI driver registration error: %d\n", regErr);
+return 1;
+    }
+    initgraph(&gd, &gm, "");
+    grErr = graphresult();
+    if (grErr != grOk) {
+printf("Graphics error %d: %s\n", grErr, grapherrormsg(grErr));
 return 1;
     }
     // Zobrazeni epilepsy warning pokud je nastaveno

@@ -2,10 +2,11 @@
 #
 # Run DOSu! in DOSBox.
 #
-# Stages a disposable run/ directory containing the EXE, map, audio,
-# and a C:\TC\BGI tree that matches the path compiled into initgraph().
-# Generates a dosbox.conf that caps the emulated CPU speed — by default
-# DOSBox runs cycles=auto, which overclocks the game on modern hardware.
+# Stages a disposable run/ directory containing the EXE, map, and audio.
+# The BGI driver is linked directly into the EXE, so no external BGI
+# directory is needed.  Generates a dosbox.conf that caps the emulated
+# CPU speed — by default DOSBox runs cycles=auto, which overclocks the
+# game on modern hardware.
 #
 # Usage:
 #   scripts/run.sh
@@ -124,19 +125,9 @@ fi
 
 # ---- stage run dir ------------------------------------------------------
 RUN_DIR="$PROJECT_ROOT/run"
-mkdir -p "$RUN_DIR" "$RUN_DIR/TC/BGI"
+mkdir -p "$RUN_DIR"
 
 cp -f "$EXE_PATH" "$RUN_DIR/$EXE"
-
-if [[ -d "$PROJECT_ROOT/BGI" ]]; then
-    shopt -s nullglob
-    for f in "$PROJECT_ROOT/BGI/"*.BGI "$PROJECT_ROOT/BGI/"*.CHR; do
-        cp -f "$f" "$RUN_DIR/TC/BGI/"
-    done
-    shopt -u nullglob
-else
-    echo "Warning: BGI/ directory missing — graphics init will fail." >&2
-fi
 
 if [[ -n "$MAP" ]]; then
     [[ -f "$MAP" ]] || { echo "Error: MAP file '$MAP' not found." >&2; exit 1; }
