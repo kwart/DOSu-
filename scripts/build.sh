@@ -47,12 +47,31 @@ Expected layout:
   \$TC_DIR/BIN/TCC.EXE   (Turbo C 2.01)
        or
   \$TC_DIR/BIN/BCC.EXE   (Turbo C++ 3.0)
+  \$TC_DIR/BGI/BGIOBJ.EXE
+  \$TC_DIR/BGI/EGAVGA.BGI
   \$TC_DIR/INCLUDE/
   \$TC_DIR/LIB/
 
 Turbo C++ 3.0 is available as abandonware from Embarcadero's
 "Antique Software" page or the Internet Archive.
 EOF
+    exit 1
+fi
+
+BGIOBJ_HOST=""
+BGIOBJ_DOS=""
+if [[ -f "$TC_DIR/BGI/BGIOBJ.EXE" ]]; then
+    BGIOBJ_HOST="$TC_DIR/BGI/BGIOBJ.EXE"
+    BGIOBJ_DOS="C:\\BGI\\BGIOBJ.EXE"
+elif [[ -f "$TC_DIR/BIN/BGIOBJ.EXE" ]]; then
+    BGIOBJ_HOST="$TC_DIR/BIN/BGIOBJ.EXE"
+    BGIOBJ_DOS="C:\\BIN\\BGIOBJ.EXE"
+else
+    echo "Error: BGIOBJ.EXE not found in $TC_DIR/BGI/ or $TC_DIR/BIN/" >&2
+    exit 1
+fi
+if [[ ! -f "$TC_DIR/BGI/EGAVGA.BGI" ]]; then
+    echo "Error: EGAVGA.BGI not found at $TC_DIR/BGI/EGAVGA.BGI" >&2
     exit 1
 fi
 
@@ -71,18 +90,21 @@ UPPER_BASE="$(echo "$BASE" | tr '[:lower:]' '[:upper:]')"  # DOSU
 BUILD_DIR="$PROJECT_ROOT/build"
 mkdir -p "$BUILD_DIR"
 
-# Copy source into build dir so DOSBox sees it on the mounted drive
-# and we don't scatter .OBJ / .EXE next to src/.
+# Copy source and EGAVGA.BGI into build dir so DOSBox sees them on D:.
 cp "$PROJECT_ROOT/src/$SRC" "$BUILD_DIR/$SRC"
+cp "$TC_DIR/BGI/EGAVGA.BGI" "$BUILD_DIR/EGAVGA.BGI"
 
-# DOSBox 8.3-name-compatible wrapper: compile with -ml (large model)
-# against Turbo C's graphics library.
-COMPILE_CMD="C:\\BIN\\$COMPILER.EXE -ml -IC:\\INCLUDE -LC:\\LIB $SRC GRAPHICS.LIB"
+# Step 1: convert EGAVGA.BGI -> EGAVGA.OBJ (run from D: so output lands there).
+# Step 2: compile + link, including the generated OBJ.
+BGIOBJ_CMD="$BGIOBJ_DOS EGAVGA"
+COMPILE_CMD="C:\\BIN\\$COMPILER.EXE -ml -IC:\\INCLUDE -LC:\\LIB $SRC EGAVGA.OBJ GRAPHICS.LIB"
 
 echo "TC_DIR      = $TC_DIR"
 echo "Compiler    = $COMPILER"
+echo "BGIOBJ      = $BGIOBJ_HOST"
 echo "Source      = src/$SRC"
 echo "Build dir   = $BUILD_DIR"
+echo "BGIOBJ cmd  = $BGIOBJ_CMD"
 echo "Compile cmd = $COMPILE_CMD"
 echo
 
@@ -94,6 +116,7 @@ echo
     -c "mount d \"$BUILD_DIR\"" \
     -c "path=c:\\bin" \
     -c "d:" \
+    -c "$BGIOBJ_CMD" \
     -c "$COMPILE_CMD" \
     -c "exit"
 
