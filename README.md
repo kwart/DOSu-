@@ -4,9 +4,6 @@ DOSu! is an open source rhytm-based game engine heavily inspired by the game "os
 --HOW TO GET STARTED--
 Its simple.. just get the DOSU exe file or compile the C89 code and place it in the same directory as your map. osu and audio.wav, the BGI folder should be at C:\TC\BGi though you can change that in the code
 
---DEMO/AUTOPLAY--
-The Dosu!_demo allows you to run the beatmap and the audio without playing the game by yourself, ideal for demonstrations and
-lower end hardware testing, to run the program the same files are required as for the normal EXE file. Note that the DEMO is still very buggy and might have sqrt issues on longer slider segments etc...
 
 --AUDIO SETUP--
 DOSu! is acessing audio through sound blaster or compatible card on address 0x220 IRQ 5 and DMA 1
