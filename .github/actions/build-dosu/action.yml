@@ -32,8 +32,7 @@ runs:
       run: |
         set -euo pipefail
         rm -rf tools/TC
-        mkdir -p tools/TC
-        unzip -q tools/TC.zip -d tools/TC
+        unzip -q tools/TC.zip -d tools
         # scripts/build.sh expects $TC_DIR/{BIN,BGI,INCLUDE,LIB}. The
         # archive may be flat or wrapped in a single top-level folder
         # (e.g. tools/TC/TC/BIN); flatten if needed.
