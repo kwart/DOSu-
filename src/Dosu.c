@@ -7,6 +7,8 @@
 #include <math.h>
 #include <bios.h>
 #include <alloc.h>
+#include <dir.h>
+#include <conio.h>
 #define MAX_OBJECTS 250
 #define MAX_BREAKS 5
 #define MAX_TIMING_POINTS 50
@@ -492,6 +494,103 @@ accuracy = 100.0 * (count300 * 300L + count100 * 100L + count50 * 50L) / (totalH
     getch();
 }
 // ----------------------------------------
+// Song selection: scan CWD for subdirectories that contain both
+// audio.wav and map.osu. If those files also exist directly in CWD,
+// expose a "[DEFAULT]" entry as the first/default choice.
+#define MAX_SONGS 18
+#define SONG_NAME_LEN 13 /* DOS 8.3 + null */
+#define DEFAULT_LABEL "[DEFAULT]"
+
+char songList[MAX_SONGS][SONG_NAME_LEN];
+int songCount = 0;
+int hasDefault = 0;
+
+int fileExists(const char *path) {
+    FILE *f;
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+int subdirHasGameFiles(const char *dir) {
+    char path[64];
+    sprintf(path, "%s\\map.osu", dir);
+    if (!fileExists(path)) return 0;
+    sprintf(path, "%s\\audio.wav", dir);
+    if (!fileExists(path)) return 0;
+    return 1;
+}
+
+void scanSongs(void) {
+    struct ffblk ff;
+    int done;
+    int i, j;
+    char tmp[SONG_NAME_LEN];
+    songCount = 0;
+    hasDefault = (fileExists("map.osu") && fileExists("audio.wav"));
+    done = findfirst("*.*", &ff, FA_DIREC);
+    while (!done && songCount < MAX_SONGS) {
+        if ((ff.ff_attrib & FA_DIREC) && ff.ff_name[0] != '.') {
+            if (subdirHasGameFiles(ff.ff_name)) {
+                strncpy(songList[songCount], ff.ff_name, SONG_NAME_LEN - 1);
+                songList[songCount][SONG_NAME_LEN - 1] = '\0';
+                songCount++;
+            }
+        }
+        done = findnext(&ff);
+    }
+    /* Insertion sort (case-insensitive) so the menu order is stable */
+    for (i = 1; i < songCount; i++) {
+        strcpy(tmp, songList[i]);
+        j = i;
+        while (j > 0 && stricmp(songList[j - 1], tmp) > 0) {
+            strcpy(songList[j], songList[j - 1]);
+            j--;
+        }
+        strcpy(songList[j], tmp);
+    }
+}
+
+/* Returns 1 with *outIndex set, 0 if user pressed Esc.
+ * Index semantics: 0..total-1, where 0 = DEFAULT if hasDefault,
+ * otherwise indices map directly into songList[]. */
+int selectSong(int *outIndex) {
+    int total;
+    int sel = 0;
+    int c, ext, i;
+    const char *name;
+    total = songCount + (hasDefault ? 1 : 0);
+    if (total == 0) return 0;
+    /* Skip menu when there are no subdirs to choose from */
+    if (songCount == 0) {
+        *outIndex = 0;
+        return 1;
+    }
+    while (1) {
+        clrscr();
+        printf("DOSu! - Select song\n\n");
+        for (i = 0; i < total; i++) {
+            if (hasDefault && i == 0) name = DEFAULT_LABEL;
+            else name = songList[i - (hasDefault ? 1 : 0)];
+            printf(" %c %s\n", (i == sel) ? '>' : ' ', name);
+        }
+        printf("\nUp/Down: move   Enter: play   Esc: quit\n");
+        c = getch();
+        if (c == 0) {
+            ext = getch();
+            if (ext == 72 && sel > 0) sel--;             /* Up */
+            else if (ext == 80 && sel < total - 1) sel++; /* Down */
+        } else if (c == 13) {
+            *outIndex = sel;
+            return 1;
+        } else if (c == 27) {
+            return 0;
+        }
+    }
+}
+
+// ----------------------------------------
 // main
 int main() {
     int gd = VGA, gm = VGAMED; /* 640x350x16, 2 pages for flicker-free drawing */
@@ -525,6 +624,24 @@ int main() {
     int baseScore;
     int grErr;
     int regErr;
+    int selIdx;
+    const char *songDir;
+    scanSongs();
+    if (songCount == 0 && !hasDefault) {
+        printf("No playable songs found.\n");
+        printf("Place map.osu + audio.wav in the current directory or in subdirectories.\n");
+        return 1;
+    }
+    if (!selectSong(&selIdx)) {
+        return 0;
+    }
+    if (!(hasDefault && selIdx == 0)) {
+        songDir = songList[selIdx - (hasDefault ? 1 : 0)];
+        if (chdir(songDir) != 0) {
+            printf("Cannot enter directory %s\n", songDir);
+            return 1;
+        }
+    }
     loadBeatmap("map.osu");
     printf("Map loaded: %d objects, %d breaks, %d timings, AudioLeadIn: %ld ms, SliderMultiplier: %.2f\n", objectCount, breakCount, timingCount, audioLeadIn, sliderMultiplier);
     if (!initMouse()) {

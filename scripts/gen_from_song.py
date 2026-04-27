@@ -5,9 +5,9 @@ Converts the input via ffmpeg to the game's required format
 (8 kHz 8-bit mono PCM WAV) and runs a pure-stdlib beat detector to
 place hit circles on detected beats.
 
-Writes:
-    run/map.osu    osu! v14 beatmap
-    run/audio.wav  8-bit mono PCM, 8 kHz
+Writes (alongside the input mp3):
+    map.osu    osu! v14 beatmap
+    audio.wav  8-bit mono PCM, 8 kHz
 
 Usage:
     scripts/gen_from_song.py [path/to/song.mp3]
@@ -21,8 +21,6 @@ import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUN = ROOT / "run"
-RUN.mkdir(exist_ok=True)
 
 SAMPLE_RATE = 8000
 HOP = 128                   # 16 ms per analysis frame
@@ -197,8 +195,9 @@ def main():
     if not src.exists():
         sys.exit("input not found: %s" % src)
 
-    wav_path = RUN / "audio.wav"
-    map_path = RUN / "map.osu"
+    out_dir = src.resolve().parent
+    wav_path = out_dir / "audio.wav"
+    map_path = out_dir / "map.osu"
 
     print("converting %s -> %s" % (src.name, wav_path))
     run_ffmpeg(src, wav_path)
