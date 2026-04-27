@@ -1,0 +1,69 @@
+name: Build DOSU.EXE
+description: Compile DOSu! under DOSBox using Turbo C++ 3.0 fetched from archive.org.
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          dosbox xvfb unzip zip curl
+
+    - name: Cache Turbo C++ download
+      id: tc_cache
+      uses: actions/cache@v4
+      with:
+        path: tools/TC.zip
+        key: tcc-20210425
+
+    - name: Download Turbo C++
+      if: steps.tc_cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p tools
+        curl -fsSL -o tools/TC.zip \
+          https://archive.org/download/tcc_20210425/TCC.zip
+
+    - name: Extract Turbo C++
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf tools/TC
+        mkdir -p tools/TC
+        unzip -q tools/TC.zip -d tools/TC
+        # scripts/build.sh expects $TC_DIR/{BIN,BGI,INCLUDE,LIB}. The
+        # archive may be flat or wrapped in a single top-level folder
+        # (e.g. tools/TC/TC/BIN); flatten if needed.
+        if [[ ! -d tools/TC/BIN ]]; then
+          inner=$(find tools/TC -maxdepth 4 -type d -iname BIN | head -1)
+          if [[ -z "$inner" ]]; then
+            echo "Error: BIN/ not found in extracted TCC.zip" >&2
+            find tools/TC -maxdepth 3 -type d
+            exit 1
+          fi
+          root="$(dirname "$inner")"
+          shopt -s dotglob
+          mv "$root"/* tools/TC/
+          shopt -u dotglob
+        fi
+        # build.sh is case-sensitive; canonicalise subdir names.
+        for d in BIN BGI INCLUDE LIB; do
+          if [[ ! -d "tools/TC/$d" ]]; then
+            found=$(find tools/TC -maxdepth 2 -type d -iname "$d" | head -1)
+            if [[ -n "$found" && "$found" != "tools/TC/$d" ]]; then
+              mv "$found" "tools/TC/$d"
+            fi
+          fi
+        done
+
+    - name: Build DOSU.EXE
+      shell: bash
+      run: |
+        set -euo pipefail
+        # DOSBox needs an SDL display even with -exit; provide a virtual
+        # framebuffer so it can run on the headless runner.
+        xvfb-run -a scripts/build.sh
+        test -f bin/DOSU.EXE
