@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.1) — produces tag dosu-X.Y.Z and dosu-X.Y.Z.zip'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  TCC_URL: https://archive.org/download/tcc_20210425/TCC.zip
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Error: version must be X.Y.Z (got '$version')" >&2
+              exit 1
+            fi
+            tag="dosu-$version"
+            title="DOSu! $version"
+            zip_name="dosu-$version.zip"
+            prerelease=false
+          else
+            tag="snapshot"
+            title="DOSu! snapshot"
+            zip_name="dosu-snapshot.zip"
+            prerelease=true
+          fi
+          {
+            echo "tag=$tag"
+            echo "title=$title"
+            echo "zip_name=$zip_name"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            dosbox xvfb unzip zip curl
+
+      - name: Cache Turbo C++ download
+        id: tc_cache
+        uses: actions/cache@v4
+        with:
+          path: tools/TC.zip
+          key: tcc-20210425
+
+      - name: Download Turbo C++
+        if: steps.tc_cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL -o tools/TC.zip "$TCC_URL"
+
+      - name: Extract Turbo C++
+        run: |
+          set -euo pipefail
+          rm -rf tools/TC
+          mkdir -p tools/TC
+          unzip -q tools/TC.zip -d tools/TC
+          # scripts/build.sh expects $TC_DIR/{BIN,BGI,INCLUDE,LIB}. The
+          # archive may be flat or wrapped in a single top-level folder
+          # (e.g. tools/TC/TC/BIN); flatten if needed.
+          if [[ ! -d tools/TC/BIN ]]; then
+            inner=$(find tools/TC -maxdepth 4 -type d -iname BIN | head -1)
+            if [[ -z "$inner" ]]; then
+              echo "Error: BIN/ not found in extracted TCC.zip" >&2
+              find tools/TC -maxdepth 3 -type d
+              exit 1
+            fi
+            root="$(dirname "$inner")"
+            shopt -s dotglob
+            mv "$root"/* tools/TC/
+            shopt -u dotglob
+          fi
+          # build.sh is case-sensitive; normalise the canonical subdir names.
+          for d in BIN BGI INCLUDE LIB; do
+            if [[ ! -d "tools/TC/$d" ]]; then
+              found=$(find tools/TC -maxdepth 2 -type d -iname "$d" | head -1)
+              if [[ -n "$found" && "$found" != "tools/TC/$d" ]]; then
+                mv "$found" "tools/TC/$d"
+              fi
+            fi
+          done
+          ls tools/TC
+
+      - name: Build DOSU.EXE
+        run: |
+          set -euo pipefail
+          # DOSBox needs an SDL display even with -exit; provide a virtual
+          # framebuffer so we can run it on the headless runner.
+          xvfb-run -a scripts/build.sh
+          test -f bin/DOSU.EXE
+
+      - name: Stage DOSU/ payload
+        run: |
+          set -euo pipefail
+          mkdir -p DOSU
+          cp bin/DOSU.EXE DOSU/DOSU.EXE
+          cp INFO.TXT     DOSU/INFO.TXT
+          if [[ -d songs ]]; then
+            cp -r songs/. DOSU/
+            find DOSU -type f -name 'song.mp3' -delete
+          fi
+          ls -lR DOSU
+
+      - name: Create zip
+        run: zip -r "${{ steps.meta.outputs.zip_name }}" DOSU
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.meta.outputs.tag }}'
+          title='${{ steps.meta.outputs.title }}'
+          zip_name='${{ steps.meta.outputs.zip_name }}'
+          prerelease='${{ steps.meta.outputs.prerelease }}'
+
+          # The snapshot release is mutable: nuke the previous release+tag
+          # so this run can recreate it cleanly. Versioned releases are
+          # immutable — gh will fail if the tag already exists.
+          if [[ "$tag" == "snapshot" ]]; then
+            gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          fi
+
+          flags=()
+          [[ "$prerelease" == "true" ]] && flags+=(--prerelease)
+
+          gh release create "$tag" \
+            --title "$title" \
+            --notes "Built from ${GITHUB_SHA::7}" \
+            --target "$GITHUB_SHA" \
+            "${flags[@]}" \
+            "$zip_name"
