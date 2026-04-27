@@ -9,7 +9,7 @@ runs:
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
-          dosbox xvfb unzip zip curl
+          dosbox xvfb unzip zip curl p7zip-full
 
     - name: Cache Turbo C++ download
       id: tc_cache
@@ -31,16 +31,31 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        rm -rf tools/TC
+        rm -rf tools/TC tools/TCC
         unzip -q tools/TC.zip -d tools
-        # scripts/build.sh expects $TC_DIR/{BIN,BGI,INCLUDE,LIB}. The
-        # archive may be flat or wrapped in a single top-level folder
-        # (e.g. tools/TC/TC/BIN); flatten if needed.
+        # The outer zip contains a TCC/ folder with TURBOC.exe — a DOS
+        # self-extracting archive that holds the actual install tree.
+        # 7z understands the common SFX wrappers (PKZIP/LHA/ARJ/...) and
+        # extracts them unattended on Linux.
+        sfx=$(find tools -maxdepth 3 -type f -iname 'TURBOC.exe' | head -1)
+        if [[ -z "$sfx" ]]; then
+          echo "Error: TURBOC.exe not found inside TCC.zip" >&2
+          find tools -maxdepth 3
+          exit 1
+        fi
+        sfx_dir="$(dirname "$sfx")"
+        (cd "$sfx_dir" && 7z x -y -bso0 -bsp0 "$(basename "$sfx")")
+        rm -f "$sfx"
+        # Normalise to tools/TC so scripts/build.sh's default TC_DIR matches.
+        if [[ "$sfx_dir" != "tools/TC" ]]; then
+          mv "$sfx_dir" tools/TC
+        fi
+        # Some packagings nest BIN/INCLUDE/LIB under another folder; flatten.
         if [[ ! -d tools/TC/BIN ]]; then
           inner=$(find tools/TC -maxdepth 4 -type d -iname BIN | head -1)
           if [[ -z "$inner" ]]; then
-            echo "Error: BIN/ not found in extracted TCC.zip" >&2
-            find tools/TC -maxdepth 3 -type d
+            echo "Error: BIN/ not found after extracting TURBOC.exe" >&2
+            find tools/TC -maxdepth 3
             exit 1
           fi
           root="$(dirname "$inner")"
@@ -57,6 +72,7 @@ runs:
             fi
           fi
         done
+        ls tools/TC
 
     - name: Build DOSU.EXE
       shell: bash
