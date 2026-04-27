@@ -20,9 +20,13 @@
 #   EXE          binary under bin/                   (default: DOSU.EXE)
 #   MAP          osu!-format beatmap to stage        (copied to run/map.osu)
 #   AUDIO        8-bit mono PCM WAV to stage         (copied to run/audio.wav)
+#   SONGS        dir of song subdirs to stage        (default: ./songs)
 #   SPEED        preset: slow | normal | fast | max  (overrides autoconfig)
 #   CYCLES       explicit DOSBox cycles value        (overrides SPEED)
 #   RECALIBRATE  1 = re-run CPU autoconfig probe
+#
+# Each subdirectory under SONGS that contains both map.osu and audio.wav
+# is copied to run/<name>/, exposing it as a selectable song in the game.
 #
 # Live speed tuning inside DOSBox: Ctrl+F11 (slower) / Ctrl+F12 (faster).
 #
@@ -33,6 +37,7 @@ DOSBOX="${DOSBOX:-dosbox}"
 EXE="${EXE:-DOSU.EXE}"
 MAP="${MAP:-}"
 AUDIO="${AUDIO:-}"
+SONGS="${SONGS:-}"
 SPEED="${SPEED:-}"
 CYCLES="${CYCLES:-}"
 RECALIBRATE="${RECALIBRATE:-}"
@@ -138,11 +143,39 @@ if [[ -n "$AUDIO" ]]; then
     cp -f "$AUDIO" "$RUN_DIR/audio.wav"
 fi
 
-if [[ ! -f "$RUN_DIR/map.osu" ]]; then
-    echo "Warning: run/map.osu missing. Pass MAP=... or run scripts/gen_sample.py." >&2
+# ---- stage song subdirectories -----------------------------------------
+# Each subdir under $SONGS_DIR with both map.osu and audio.wav becomes a
+# selectable entry in the in-game menu. Clean stale song subdirs from any
+# previous run first so removed songs don't linger.
+SONGS_DIR="${SONGS:-$PROJECT_ROOT/songs}"
+find "$RUN_DIR" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+
+staged_songs=0
+if [[ -d "$SONGS_DIR" ]]; then
+    for d in "$SONGS_DIR"/*/; do
+        [[ -d "$d" ]] || continue
+        name=$(basename "$d")
+        if [[ ! -f "$d/map.osu" || ! -f "$d/audio.wav" ]]; then
+            echo "Skipping song '$name' (missing map.osu or audio.wav)" >&2
+            continue
+        fi
+        # DOS 8.3: longer names still work but DOSBox exposes them under a
+        # short alias (e.g. MYAWES~1), which is what the game will display.
+        if (( ${#name} > 8 )); then
+            echo "Note: song dir '$name' exceeds 8 chars; DOSBox will rename it 8.3." >&2
+        fi
+        mkdir -p "$RUN_DIR/$name"
+        cp -f "$d/map.osu"   "$RUN_DIR/$name/map.osu"
+        cp -f "$d/audio.wav" "$RUN_DIR/$name/audio.wav"
+        staged_songs=$((staged_songs + 1))
+    done
 fi
-if [[ ! -f "$RUN_DIR/audio.wav" ]]; then
-    echo "Warning: run/audio.wav missing. Pass AUDIO=... or run scripts/gen_sample.py." >&2
+
+has_default=0
+[[ -f "$RUN_DIR/map.osu" && -f "$RUN_DIR/audio.wav" ]] && has_default=1
+if (( !has_default && staged_songs == 0 )); then
+    echo "Warning: nothing to play — no run/{map.osu,audio.wav} and no songs in $SONGS_DIR." >&2
+    echo "  Pass MAP=... AUDIO=..., add subdirs under songs/, or run scripts/gen_sample.py." >&2
 fi
 
 # ---- write dosbox.conf --------------------------------------------------
@@ -170,6 +203,7 @@ EOF
 
 echo "Run dir = $RUN_DIR"
 echo "EXE     = $EXE"
+echo "Songs   = $staged_songs staged from $SONGS_DIR"
 echo "Speed   = $CHOSEN_CYCLES  ($SRC)"
 echo "Tip: inside DOSBox, Ctrl+F11 slower / Ctrl+F12 faster."
 echo
