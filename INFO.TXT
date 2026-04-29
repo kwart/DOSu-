@@ -1,0 +1,32 @@
+DOSu! - rhythm game for MS-DOS
+==============================
+
+A native DOS rhythm game engine inspired by osu!, written in C89 and
+built with Turbo C++ 3.0. Tested on Pentium II hardware.
+
+Controls
+--------
+  Mouse        move the yellow cursor
+  Left button  hit a circle
+  X key        alternate hit key
+  Esc          quit
+
+Selecting a song
+----------------
+On startup, DOSU scans its working directory:
+  - subdirectories that contain map.osu + audio.wav appear as menu entries
+  - if map.osu + audio.wav also sit next to DOSU.EXE, a [DEFAULT] entry
+    is shown first and pre-selected
+Use Up / Down / Enter to choose, Esc to quit.
+
+Files expected per song
+-----------------------
+  map.osu     osu! v14 beatmap
+  audio.wav   8-bit mono PCM, 8 kHz or 11 kHz
+
+Sound Blaster defaults: base 0x220, IRQ 5, DMA 1.
+Change SB_BASE / IRQ / DMA_CHANNEL in the source and rebuild.
+
+Project
+-------
+https://github.com/jan7cz/DOSu-

@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.1) — produces tag dosu-X.Y.Z and dosu-X.Y.Z.zip'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Error: version must be X.Y.Z (got '$version')" >&2
+              exit 1
+            fi
+            tag="dosu-$version"
+            title="DOSu! $version"
+            zip_name="dosu-$version.zip"
+            prerelease=false
+          else
+            tag="snapshot"
+            title="DOSu! snapshot"
+            zip_name="dosu-snapshot.zip"
+            prerelease=true
+          fi
+          {
+            echo "tag=$tag"
+            echo "title=$title"
+            echo "zip_name=$zip_name"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/build-dosu
+
+      - name: Stage DOSU/ payload
+        run: |
+          set -euo pipefail
+          mkdir -p DOSU
+          cp bin/DOSU.EXE DOSU/DOSU.EXE
+          cp INFO.TXT     DOSU/INFO.TXT
+          if [[ -d songs ]]; then
+            cp -r songs/. DOSU/
+            find DOSU -type f -name 'song.mp3' -delete
+          fi
+          ls -lR DOSU
+
+      - name: Create zip
+        run: zip -r "${{ steps.meta.outputs.zip_name }}" DOSU
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.meta.outputs.tag }}'
+          title='${{ steps.meta.outputs.title }}'
+          zip_name='${{ steps.meta.outputs.zip_name }}'
+          prerelease='${{ steps.meta.outputs.prerelease }}'
+
+          # The snapshot release is mutable: nuke the previous release+tag
+          # so this run can recreate it cleanly. Versioned releases are
+          # immutable — gh will fail if the tag already exists.
+          if [[ "$tag" == "snapshot" ]]; then
+            gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          fi
+
+          flags=()
+          [[ "$prerelease" == "true" ]] && flags+=(--prerelease)
+
+          gh release create "$tag" \
+            --title "$title" \
+            --notes "Built from ${GITHUB_SHA::7}" \
+            --target "$GITHUB_SHA" \
+            "${flags[@]}" \
+            "$zip_name"

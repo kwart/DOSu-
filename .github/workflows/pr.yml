@@ -1,0 +1,23 @@
+name: PR build check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/build-dosu
+
+      - name: Upload built EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: DOSU.EXE
+          path: bin/DOSU.EXE
+          if-no-files-found: error
