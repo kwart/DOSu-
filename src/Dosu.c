@@ -455,8 +455,65 @@ int checkDirection(long sliderX, long sliderY, long nextX, long nextY, long mous
     dot = ((double)sliderDX * mouseDX + (double)sliderDY * mouseDY) / (sliderMag * mouseMag);
     return dot > DIRECTION_TOLERANCE;
 }
-// ----------------------------------------
-// Kresleni life baru
+/* ---------------------------------------- */
+/* Preskalovat souradnice objektu pokud presahuji hranice obrazovky (640x350). */
+void rescaleCoordinates(void) {
+    int i, j;
+    int minX, maxX, minY, maxY;
+    int playW, playH;
+    double scaleX, scaleY, scale;
+    int offsetX, offsetY;
+    int marginSide, marginTop, marginBot;
+
+    if (objectCount == 0) return;
+
+    minX = maxX = objects[0].x;
+    minY = maxY = objects[0].y;
+
+    for (i = 0; i < objectCount; i++) {
+        if (objects[i].x < minX) minX = objects[i].x;
+        if (objects[i].x > maxX) maxX = objects[i].x;
+        if (objects[i].y < minY) minY = objects[i].y;
+        if (objects[i].y > maxY) maxY = objects[i].y;
+        for (j = 0; j < objects[i].curvePointCount; j++) {
+            if (objects[i].curvePoints[j][0] < minX) minX = objects[i].curvePoints[j][0];
+            if (objects[i].curvePoints[j][0] > maxX) maxX = objects[i].curvePoints[j][0];
+            if (objects[i].curvePoints[j][1] < minY) minY = objects[i].curvePoints[j][1];
+            if (objects[i].curvePoints[j][1] > maxY) maxY = objects[i].curvePoints[j][1];
+        }
+    }
+
+    if (minX >= 0 && maxX <= 639 && minY >= 0 && maxY <= 349) return;
+
+    printf("Preskalovavam souradnice (%d-%d, %d-%d) -> obrazovka\n", minX, maxX, minY, maxY);
+
+    marginSide = 10;
+    marginTop = 50; /* misto pro life bar a score */
+    marginBot = 10;
+    playW = 639 - 2 * marginSide;
+    playH = 349 - marginTop - marginBot;
+
+    scaleX = (maxX > minX) ? (double)playW / (double)(maxX - minX) : 1.0;
+    scaleY = (maxY > minY) ? (double)playH / (double)(maxY - minY) : 1.0;
+    scale = (scaleX < scaleY) ? scaleX : scaleY;
+
+    /* Vystredeni obsahu ve hracim prostoru */
+    offsetX = marginSide + (playW - (int)((double)(maxX - minX) * scale)) / 2
+              - (int)((double)minX * scale);
+    offsetY = marginTop + (playH - (int)((double)(maxY - minY) * scale)) / 2
+              - (int)((double)minY * scale);
+
+    for (i = 0; i < objectCount; i++) {
+        objects[i].x = (int)((double)objects[i].x * scale) + offsetX;
+        objects[i].y = (int)((double)objects[i].y * scale) + offsetY;
+        for (j = 0; j < objects[i].curvePointCount; j++) {
+            objects[i].curvePoints[j][0] = (int)((double)objects[i].curvePoints[j][0] * scale) + offsetX;
+            objects[i].curvePoints[j][1] = (int)((double)objects[i].curvePoints[j][1] * scale) + offsetY;
+        }
+    }
+}
+/* ---------------------------------------- */
+/* Kresleni life baru */
 void drawLifeBar(int life) {
     setcolor(GREEN);
     rectangle(10, 30, 10 + (life * 2), 40); // Bar sirka podle zivotu
@@ -643,6 +700,7 @@ int main() {
         }
     }
     loadBeatmap("map.osu");
+    rescaleCoordinates();
     printf("Map loaded: %d objects, %d breaks, %d timings, AudioLeadIn: %ld ms, SliderMultiplier: %.2f\n", objectCount, breakCount, timingCount, audioLeadIn, sliderMultiplier);
     if (!initMouse()) {
 printf("Myš nenalezena\n");
