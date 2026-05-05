@@ -335,7 +335,14 @@ static void m13_pixel(int x,int y,unsigned char col){
     if(x>=0&&x<SCREEN_W&&y>=0&&y<SCREEN_H) backbuf[(unsigned)(y*SCREEN_W+x)]=col;
 }
 static void m13_clear(void){unsigned i;for(i=0;i<(unsigned)(SCREEN_W*SCREEN_H);i++)backbuf[i]=0;}
-static void m13_flip(void){unsigned i;for(i=0;i<(unsigned)(SCREEN_W*SCREEN_H);i++)vidmem[i]=backbuf[i];}
+static void m13_flip(void){
+    unsigned int far *src=(unsigned int far *)backbuf;
+    unsigned int far *dst=(unsigned int far *)vidmem;
+    unsigned i;
+    while ( inportb(0x3DA)&8);  /* wait if already in retrace */
+    while (!(inportb(0x3DA)&8)); /* wait for retrace start */
+    for(i=0;i<32000U;i++) dst[i]=src[i]; /* word copy = 2x faster */
+}
 static void m13_line(int x0,int y0,int x1,int y1,unsigned char col){
     int dx,dy,sx,sy,err,e2;
     dx=abs(x1-x0);dy=abs(y1-y0);
