@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <dos.h>
-#include <graphics.h>
 #include <time.h>
 #include <string.h>
 #include <math.h>
@@ -48,6 +47,16 @@
 #define DMA_PAGE 0x83 // For channel 1
 #define PIC_MASK 0x21
 #define IRQ 5
+#define SCREEN_W 320
+#define SCREEN_H 200
+#define M13_WHITE 255
+#define HUE_SHIFT 50
+#define MAX_TEXT_QUEUE 24
+static unsigned char far *vidmem = (unsigned char far *)0xA0000000L;
+static unsigned char far *backbuf;
+struct TQItem { int x; int y; char s[32]; unsigned char col; };
+static struct TQItem tq[MAX_TEXT_QUEUE];
+static int tq_len;
 #define IRQ_VEC (0x08 + IRQ)
 // Typy struktur
 typedef struct {
@@ -298,16 +307,104 @@ sv = 1.0;
     if (repeats < 1) repeats = 1;
     return durationOne * repeats;
 }
+static void m13_setmode(void){union REGS r;r.x.ax=0x0013;int86(0x10,&r,&r);}
+static void m13_textmode(void){union REGS r;r.x.ax=0x0003;int86(0x10,&r,&r);}
+static void m13_setpal(unsigned char idx,unsigned char r8,unsigned char g8,unsigned char b8){
+    outportb(0x3C8,idx);outportb(0x3C9,(unsigned char)(r8>>2));
+    outportb(0x3C9,(unsigned char)(g8>>2));outportb(0x3C9,(unsigned char)(b8>>2));
+}
+static void m13_setup_palette(void){
+    int i,hi; double h,f; unsigned char r8,g8,b8,t,q;
+    m13_setpal(0,0,0,0);
+    for(i=1;i<=254;i++){
+        h=(double)(i-1)/254.0*360.0; hi=(int)(h/60.0)%6;
+        f=h/60.0-(int)(h/60.0); t=(unsigned char)(255.0*f); q=(unsigned char)(255.0*(1.0-f));
+        switch(hi){
+            case 0:r8=255;g8=t;  b8=0;  break;
+            case 1:r8=q;  g8=255;b8=0;  break;
+            case 2:r8=0;  g8=255;b8=t;  break;
+            case 3:r8=0;  g8=q;  b8=255;break;
+            case 4:r8=t;  g8=0;  b8=255;break;
+            default:r8=255;g8=0; b8=q;  break;
+        }
+        m13_setpal((unsigned char)i,r8,g8,b8);
+    }
+    m13_setpal(255,255,255,255);
+}
+static void m13_pixel(int x,int y,unsigned char col){
+    if(x>=0&&x<SCREEN_W&&y>=0&&y<SCREEN_H) backbuf[(unsigned)(y*SCREEN_W+x)]=col;
+}
+static void m13_clear(void){unsigned i;for(i=0;i<(unsigned)(SCREEN_W*SCREEN_H);i++)backbuf[i]=0;}
+static void m13_flip(void){unsigned i;for(i=0;i<(unsigned)(SCREEN_W*SCREEN_H);i++)vidmem[i]=backbuf[i];}
+static void m13_line(int x0,int y0,int x1,int y1,unsigned char col){
+    int dx,dy,sx,sy,err,e2;
+    dx=abs(x1-x0);dy=abs(y1-y0);
+    sx=(x0<x1)?1:-1; sy=(y0<y1)?1:-1; err=dx-dy;
+    for(;;){m13_pixel(x0,y0,col);if(x0==x1&&y0==y1)break;
+        e2=2*err;
+        if(e2>-dy){err-=dy;x0+=sx;}
+        if(e2< dx){err+=dx;y0+=sy;}}
+}
+static void m13_circle(int cx,int cy,int r,unsigned char col){
+    int x=0,y=r,d=1-r;
+    while(x<=y){
+        m13_pixel(cx+x,cy+y,col);m13_pixel(cx-x,cy+y,col);
+        m13_pixel(cx+x,cy-y,col);m13_pixel(cx-x,cy-y,col);
+        m13_pixel(cx+y,cy+x,col);m13_pixel(cx-y,cy+x,col);
+        m13_pixel(cx+y,cy-x,col);m13_pixel(cx-y,cy-x,col);
+        if(d<0){d+=2*x+3;}else{d+=2*(x-y)+5;y--;} x++;
+    }
+}
+static void m13_fill_circle_grad(int cx,int cy,int r,unsigned char baseHue){
+    int dy,dx,hw,r2,dist2; unsigned char col;
+    r2=r*r;
+    for(dy=-r;dy<=r;dy++){
+        if(cy+dy<0||cy+dy>=SCREEN_H) continue;
+        hw=0; while((hw+1)*(hw+1)+dy*dy<=r2) hw++;
+        for(dx=-hw;dx<=hw;dx++){
+            if(cx+dx<0||cx+dx>=SCREEN_W) continue;
+            dist2=dx*dx+dy*dy;
+            col=(unsigned char)(baseHue+(unsigned)(HUE_SHIFT*(r2-dist2)/r2));
+            if(col==0) col=1;
+            backbuf[(unsigned)((cy+dy)*SCREEN_W+(cx+dx))]=col;
+        }
+    }
+}
+static void m13_rect(int x0,int y0,int x1,int y1,unsigned char col){
+    int x,y;
+    for(y=y0;y<=y1;y++) for(x=x0;x<=x1;x++) m13_pixel(x,y,col);
+}
+static void m13_queue_text(int x,int y,const char *s,unsigned char col){
+    int n=0;
+    if(tq_len>=MAX_TEXT_QUEUE) return;
+    tq[tq_len].x=x;tq[tq_len].y=y;tq[tq_len].col=col;
+    while(*s&&n<31) tq[tq_len].s[n++]=*s++;
+    tq[tq_len].s[n]=0; tq_len++;
+}
+static void m13_flush_text(void){
+    union REGS r; int i; const char *p;
+    unsigned char col,row8,col8;
+    for(i=0;i<tq_len;i++){
+        col8=(unsigned char)(tq[i].x/8); row8=(unsigned char)(tq[i].y/8);
+        col=tq[i].col; p=tq[i].s;
+        while(*p){
+            r.h.ah=0x02;r.h.bh=0;r.h.dh=row8;r.h.dl=col8;
+            int86(0x10,&r,&r);
+            r.h.ah=0x09;r.h.al=*p++;r.h.bh=0;r.h.bl=col;r.x.cx=1;
+            int86(0x10,&r,&r);
+            col8++;
+        }
+    }
+    tq_len=0;
+}
 // ----------------------------------------
 // Kresleni jednoduche krivky - pro 'L' line, pro ostatni aproximace line segments
-void drawSliderPath(int x, int y, int points[][2], int count, char curveType) {
+void drawSliderPath(int x, int y, int points[][2], int count, char curveType, unsigned char color) {
     int i;
-    setcolor(WHITE);
-    line(x, y, points[0][0], points[0][1]);
+    m13_line(x, y, points[0][0], points[0][1], color);
     for (i = 0; i < count - 1; i++) {
-line(points[i][0], points[i][1], points[i+1][0], points[i+1][1]);
+m13_line(points[i][0], points[i][1], points[i+1][0], points[i+1][1], color);
     }
-    // Pro slozitejsi krivky (P,B,C) by slo aproximovat vic, ale pro jednoduchost line segments mezi points
 }
 // ----------------------------------------
 // Vypocet pozice follow circle podle progress (0-1 pro jeden pass)
@@ -483,15 +580,15 @@ void rescaleCoordinates(void) {
         }
     }
 
-    if (minX >= 0 && maxX <= 639 && minY >= 0 && maxY <= 349) return;
+    if (minX >= 0 && maxX <= SCREEN_W-1 && minY >= 0 && maxY <= SCREEN_H-1) return;
 
     printf("Preskalovavam souradnice (%d-%d, %d-%d) -> obrazovka\n", minX, maxX, minY, maxY);
 
-    marginSide = 10;
-    marginTop = 50; /* misto pro life bar a score */
-    marginBot = 10;
-    playW = 639 - 2 * marginSide;
-    playH = 349 - marginTop - marginBot;
+    marginSide = 5;
+    marginTop = 25; /* misto pro life bar */
+    marginBot = 5;
+    playW = SCREEN_W - 1 - 2 * marginSide;
+    playH = SCREEN_H - 1 - marginTop - marginBot;
 
     scaleX = (maxX > minX) ? (double)playW / (double)(maxX - minX) : 1.0;
     scaleY = (maxY > minY) ? (double)playH / (double)(maxY - minY) : 1.0;
@@ -515,10 +612,9 @@ void rescaleCoordinates(void) {
 /* ---------------------------------------- */
 /* Kresleni life baru */
 void drawLifeBar(int life) {
-    setcolor(GREEN);
-    rectangle(10, 30, 10 + (life * 2), 40); // Bar sirka podle zivotu
-    setfillstyle(SOLID_FILL, GREEN);
-    bar(10, 30, 10 + (life * 2), 40);
+    unsigned char col = (unsigned char)(1 + life * 84 / 100);
+    m13_rect(5, 15, 5 + life, 20, col);
+    m13_rect(5 + life + 1, 15, 105, 20, 0);
 }
 // ----------------------------------------
 // Koncovy screen
@@ -532,22 +628,22 @@ void showEndScreen() {
 /* Pozn.: 100L kvuli long aritmetice; 300.0 vynuti double deleni */
 accuracy = 100.0 * (count300 * 300L + count100 * 100L + count50 * 50L) / (totalHits * 300.0);
     }
-    cleardevice();
-    setcolor(WHITE);
-    outtextxy(10, 10, "Finish - statistics:");
+    m13_clear(); m13_flip();
+    m13_queue_text(10, 10, "Finish - statistics:", M13_WHITE);
     sprintf(buf, "30: %ld", count300);
-    outtextxy(10, 50, buf);
+    m13_queue_text(10, 50, buf, M13_WHITE);
     sprintf(buf, "10: %ld", count100);
-    outtextxy(10, 70, buf);
+    m13_queue_text(10, 70, buf, M13_WHITE);
     sprintf(buf, "5: %ld", count50);
-    outtextxy(10, 90, buf);
+    m13_queue_text(10, 90, buf, M13_WHITE);
     sprintf(buf, "misses: %ld", countMiss);
-    outtextxy(10, 110, buf);
+    m13_queue_text(10, 110, buf, M13_WHITE);
     sprintf(buf, "total score: %ld", score);
-    outtextxy(10, 130, buf);
+    m13_queue_text(10, 130, buf, M13_WHITE);
     sprintf(buf, "accuracy: %.2f%%", accuracy);
-    outtextxy(10, 150, buf);
-    outtextxy(10, 170, "press any key to continue...");
+    m13_queue_text(10, 150, buf, M13_WHITE);
+    m13_queue_text(10, 170, "press any key to continue...", M13_WHITE);
+    m13_flush_text();
     getch();
 }
 // ----------------------------------------
@@ -650,8 +746,6 @@ int selectSong(int *outIndex) {
 // ----------------------------------------
 // main
 int main() {
-    int gd = VGA, gm = VGAMED; /* 640x350x16, 2 pages for flicker-free drawing */
-    int drawPage = 0;
     long now, time_since_irq, additional_bytes, total_bytes;
     int i, active, j, inBreak;
     char buf[64], numBuf[3];
@@ -679,8 +773,6 @@ int main() {
     int directionOK;
     int isHit;
     int baseScore;
-    int grErr;
-    int regErr;
     int selIdx;
     const char *songDir;
     scanSongs();
@@ -706,30 +798,22 @@ int main() {
 printf("Myš nenalezena\n");
 return 1;
     }
-    regErr = registerbgidriver(EGAVGA_driver);
-    if (regErr < 0) {
-printf("BGI driver registration error: %d\n", regErr);
-return 1;
-    }
-    initgraph(&gd, &gm, "");
-    grErr = graphresult();
-    if (grErr != grOk) {
-printf("Graphics error %d: %s\n", grErr, grapherrormsg(grErr));
-return 1;
-    }
-    // Zobrazeni epilepsy warning pokud je nastaveno
+    backbuf = (unsigned char far *)farmalloc(64000L);
+    if (!backbuf) { printf("No backbuf\n"); return 1; }
+    m13_setmode();
+    m13_setup_palette();
+    tq_len = 0;
     if (epilepsyWarning) {
-cleardevice();
-outtextxy(100, 200, "Epilepsy Warning! Press any key to continue...");
-getch();
-cleardevice();
+        m13_clear(); m13_flip();
+        m13_queue_text(20, 90, "Epilepsy Warning! Press any key...", M13_WHITE);
+        m13_flush_text(); getch();
+        m13_clear(); m13_flip();
     }
     // otevreni WAV souboru
     wavFile = fopen("audio.wav", "rb");
     if (!wavFile) {
-printf("Nelze otevrit audio.wav\n");
-closegraph();
-exit(1);
+        m13_textmode(); farfree(backbuf);
+        printf("Nelze otevrit audio.wav\n"); exit(1);
     }
     // Cteni sample rate z WAV headeru (bytes 24-27, little endian)
     fseek(wavFile, 24, SEEK_SET);
@@ -748,10 +832,8 @@ printf("Nepodporovana sample rate %lu, pouzivam default 8000\n", sample_rate);
     /* Allocate DMA buffers via farmalloc (malloc truncates to 16-bit size) */
     alloc_dma = (unsigned char far *)farmalloc(BUFFER_SIZE * 3UL);
     if (!alloc_dma) {
-	printf("No memory\n");
-	fclose(wavFile);
-	closegraph();
-	return 1;
+        m13_textmode(); farfree(backbuf);
+        printf("No memory\n"); fclose(wavFile); return 1;
     }
     /* Align so each BUFFER_SIZE half stays within one 64K DMA page */
     {
@@ -769,11 +851,8 @@ printf("Nepodporovana sample rate %lu, pouzivam default 8000\n", sample_rate);
     fill_buffer(half_buf[1]);
     // Reset SB
     if (!sb_reset()) {
-	printf("SB reset failed\n");
-	farfree(alloc_dma);
-	fclose(wavFile);
-	closegraph();
-	return 1;
+        m13_textmode(); farfree(backbuf);
+        printf("SB reset failed\n"); farfree(alloc_dma); fclose(wavFile); return 1;
     }
     // Turn on speaker
     sb_write_dsp(0xD1);
@@ -821,9 +900,7 @@ time_since_irq = getTimeMS() - last_irq_time;
 additional_bytes = (time_since_irq * (long)rate) / 1000;
 total_bytes = played_bytes + additional_bytes;
 now = (total_bytes * 1000L) / rate - AUDIO_DELAY_MS;
-/* Draw on hidden page, then flip */
-setactivepage(drawPage);
-cleardevice();
+m13_clear();
 // Check if in break
 inBreak = 0;
 for (j = 0; j < breakCount; j++) {
@@ -864,7 +941,7 @@ hitTime = now; // Cas kliku
 mouseDX = mouseX - prevMouseX;
 mouseDY = mouseY - prevMouseY;
 if (inBreak) {
-    outtextxy(200, 200, "Break");
+    m13_queue_text(100, 90, "Break", M13_WHITE);
 } else {
     active = 0;
     currentCombo = 1;
@@ -889,11 +966,10 @@ if (now > objects[i].time + MISS_WINDOW) {
     playerLife -= LIFE_LOSS_MISS;
     if (playerLife < 0) playerLife = 0;
     objects[i].hit = 1;
-    setcolor(RED);
-    outtextxy(objects[i].x - 20, objects[i].y + 30, "chyba");
+    m13_queue_text(objects[i].x - 20, objects[i].y + 30, "chyba", 1);
     continue;
 }
-// Check hit
+/* Check hit */
 isHit = 0;
 baseScore = 0;
 if (mousePress || keyPress) {
@@ -940,50 +1016,43 @@ if (playerLife < 0) playerLife = 0;
     countMiss++;
     playerLife -= LIFE_LOSS_MISS;
     if (playerLife < 0) playerLife = 0;
-    setcolor(RED);
-    outtextxy(objects[i].x - 20, objects[i].y + 30, "chyba");
+    m13_queue_text(objects[i].x - 20, objects[i].y + 30, "chyba", 1);
     objects[i].hit = 1;
     isHit = 1;
 }
     }
 }
 if (isHit) continue;
-// Kreslit objekt
-if (objects[i].type == 1) { // Circle
-    // Approach circle pokud pred hitem
+/* Kreslit objekt */
+{
+    unsigned char cFill, cAppr;
+    cFill = (unsigned char)(1 + (unsigned)(currentCombo - 1) * 21U % 254U);
+    cAppr = (unsigned char)(1 + ((unsigned)(currentCombo - 1) * 21U + 127U) % 254U);
+if (objects[i].type == 1) { /* Circle */
     if (now < objects[i].time) {
 progress = (objects[i].time - now) / (float)PRE_SHOW;
 approachR = CIRCLE_RADIUS + (int)((APPROACH_SCALE - 1.0) * CIRCLE_RADIUS * progress);
-setcolor(LIGHTGRAY);
-circle(objects[i].x, objects[i].y, approachR);
+m13_circle(objects[i].x, objects[i].y, approachR, cAppr);
     }
-    // Kruh
-    setcolor(GREEN);
-    circle(objects[i].x, objects[i].y, CIRCLE_RADIUS);
-    // Cislo
+    m13_fill_circle_grad(objects[i].x, objects[i].y, CIRCLE_RADIUS, cFill);
+    m13_circle(objects[i].x, objects[i].y, CIRCLE_RADIUS, M13_WHITE);
     sprintf(numBuf, "%d", currentCombo);
-    outtextxy(objects[i].x - 5, objects[i].y - 5, numBuf);
-} else if (objects[i].type == 2) { // Slider
-    // Kreslit path
-    drawSliderPath(objects[i].x, objects[i].y, objects[i].curvePoints, objects[i].curvePointCount, objects[i].curveType);
-    // Start kruh s cislem
-    setcolor(GREEN);
-    circle(objects[i].x, objects[i].y, CIRCLE_RADIUS);
+    m13_queue_text(objects[i].x - 4, objects[i].y - 4, numBuf, M13_WHITE);
+} else if (objects[i].type == 2) { /* Slider */
+    drawSliderPath(objects[i].x, objects[i].y, objects[i].curvePoints, objects[i].curvePointCount, objects[i].curveType, cFill);
+    m13_fill_circle_grad(objects[i].x, objects[i].y, CIRCLE_RADIUS, cFill);
+    m13_circle(objects[i].x, objects[i].y, CIRCLE_RADIUS, M13_WHITE);
     sprintf(numBuf, "%d", currentCombo);
-    outtextxy(objects[i].x - 5, objects[i].y - 5, numBuf);
-    // End kruh - modry pokud repeats >1
+    m13_queue_text(objects[i].x - 4, objects[i].y - 4, numBuf, M13_WHITE);
     endX = objects[i].curvePoints[objects[i].curvePointCount-1][0];
     endY = objects[i].curvePoints[objects[i].curvePointCount-1][1];
-    setcolor((objects[i].repeats > 1) ? BLUE : GREEN);
-    circle(endX, endY, CIRCLE_RADIUS);
-    // Approach na startu pred hitem
+    m13_fill_circle_grad(endX, endY, CIRCLE_RADIUS, cAppr);
+    m13_circle(endX, endY, CIRCLE_RADIUS, M13_WHITE);
     if (now < objects[i].time) {
 progress = (objects[i].time - now) / (float)PRE_SHOW;
 approachR = CIRCLE_RADIUS + (int)((APPROACH_SCALE - 1.0) * CIRCLE_RADIUS * progress);
-setcolor(LIGHTGRAY);
-circle(objects[i].x, objects[i].y, approachR);
+m13_circle(objects[i].x, objects[i].y, approachR, cAppr);
     }
-    // Follow circle po hitu, ale jen do konce totalDuration
     if (now >= objects[i].time) {
 timePassed = now - objects[i].time;
 if (timePassed > totalDuration) timePassed = totalDuration;
@@ -992,23 +1061,20 @@ localProgress = (float)(pass - floor(pass));
 if (((int)floor(pass)) % 2 == 1) localProgress = 1.0f - localProgress;
     }
 }
+} /* konec bloku barev */
 active++;
     }
 }
-        // Kreslit kurzor
-        setcolor(YELLOW);
-        circle(mouseX, mouseY, 5);
-        sprintf(buf, "t=%ld ms, active=%d", now, active);
-        outtextxy(10, 10, buf);
-        // Check if all objects done or audio ended
+        /* Kreslit kurzor */
+        m13_circle(mouseX, mouseY, 5, M13_WHITE);
+        sprintf(buf, "t=%ld ms", now);
+        m13_queue_text(1, 1, buf, M13_WHITE);
         if ((objectCount > 0 && now > objects[objectCount-1].time + 1000) || end_of_file) {
             done = 1;
         }
-        /* Flip: show the page we just drew, next frame draws on the other */
-        setvisualpage(drawPage);
-        drawPage = 1 - drawPage;
-        // FPS limit
-delay(loopDelay / FPS);
+        m13_flip();
+        m13_flush_text();
+        delay(loopDelay / FPS);
     }
     // Zastavit zvuk pred koncovym screenem
     outportb(PIC_MASK, inportb(PIC_MASK) | (1 << IRQ));
@@ -1020,6 +1086,7 @@ delay(loopDelay / FPS);
     // Cleanup
     farfree(alloc_dma);
     fclose(wavFile);
-    closegraph();
+    m13_textmode();
+    farfree(backbuf);
     return 0;
 }
