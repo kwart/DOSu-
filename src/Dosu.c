@@ -820,7 +820,11 @@ printf("Nepodporovana sample rate %lu, pouzivam default 8000\n", sample_rate);
 time_since_irq = getTimeMS() - last_irq_time;
 additional_bytes = (time_since_irq * (long)rate) / 1000;
 total_bytes = played_bytes + additional_bytes;
-now = (total_bytes * 1000L) / rate - AUDIO_DELAY_MS;
+/* total_bytes*1000L pretece signed long uz po ~4 min (rate B/s).
+   Rozdelit na cele sekundy + zbytek, aby mezivysledek zustal maly. */
+now = (total_bytes / (long)rate) * 1000L
+      + ((total_bytes % (long)rate) * 1000L) / (long)rate
+      - AUDIO_DELAY_MS;
 /* Draw on hidden page, then flip */
 setactivepage(drawPage);
 cleardevice();
